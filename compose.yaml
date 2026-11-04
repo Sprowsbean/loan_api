@@ -1,0 +1,36 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    ports:
+      - "8000:8000"
+    environment:
+      MODEL_PATH: /app/model.joblib
+    depends_on:
+      db:
+        condition: service_healthy   # wait until PostgreSQL accepts connections
+
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: loans
+      POSTGRES_PASSWORD: loans_dev_only   # development only; never commit real passwords
+      POSTGRES_DB: loans
+    volumes:
+      - pgdata:/var/lib/postgresql/data                      # data survives container restarts
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro   # runs once, on first start
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loans -d loans"]
+      interval: 5s
+      retries: 10
+
+  adminer:
+    image: adminer:4.8.1
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
