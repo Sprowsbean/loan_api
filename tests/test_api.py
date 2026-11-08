@@ -17,7 +17,8 @@ def client():
 def test_health_reports_model_version(client):
     body = client.get("/health").json()
     assert body["status"] == "ok"
-    assert body["model_version"]  # now comes from the registry, e.g. "1"
+    assert body["model_version"]  # from the model file, or the registry when MLFLOW_TRACKING_URI is set
+    assert "sha" in body          # the pipeline compares this with the commit it just deployed
 
 def test_prediction_is_a_probability(client):
     body = client.post("/api/v1/predictions", json=GOOD).json()

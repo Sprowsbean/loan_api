@@ -9,21 +9,29 @@ from fastapi import FastAPI, HTTPException
 
 from schemas import Application, ApplicationCreate, LoanFeatures, Prediction
 
-import mlflow
-from mlflow import MlflowClient
-
-ml = {}            # filled at start-up: {"model": ..., "version": ..., "features": [...]}
+ml = {}            # filled at start-up: {"predict": ..., "version": ..., "features": [...]}
 APPLICATIONS = {}  # in-memory store; resets when the server restarts
+MODEL_PATH = os.getenv("MODEL_PATH", "model.joblib")
 MODEL_NAME = os.getenv("MODEL_NAME", "loan-default")
 MODEL_ALIAS = os.getenv("MODEL_ALIAS", "champion")
 FEATURES = ["amount_usd", "term_months", "monthly_income_usd", "previous_loans", "late_payments"]
+GIT_SHA = os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_SHA", "unknown")  # set by Render at run time
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # MLFLOW_TRACKING_URI (an environment variable) tells MLflow where the registry is
-    ml["model"] = mlflow.pyfunc.load_model(f"models:/{MODEL_NAME}@{MODEL_ALIAS}")
-    ml["version"] = MlflowClient().get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS).version
+    if os.getenv("MLFLOW_TRACKING_URI"):
+        # Registry mode: MLFLOW_TRACKING_URI says where the registry is; load whichever version the alias points to
+        import mlflow
+        from mlflow import MlflowClient
+        model = mlflow.pyfunc.load_model(f"models:/{MODEL_NAME}@{MODEL_ALIAS}")
+        ml["predict"] = lambda X: float(model.predict(X)[0, 1])  # pyfunc returns predict_proba output
+        ml["version"] = MlflowClient().get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS).version
+    else:
+        # File mode (CI and production): the model file baked into the image
+        saved = joblib.load(MODEL_PATH)
+        ml["predict"] = lambda X: float(saved["model"].predict_proba(X)[0, 1])
+        ml["version"] = saved["version"]
     ml["features"] = FEATURES
     yield
     ml.clear()
@@ -34,14 +42,14 @@ app = FastAPI(title="Loan Application Service", version="1.0.0", lifespan=lifesp
 
 def score(features: LoanFeatures) -> Prediction:
     X = pd.DataFrame([features.model_dump()])[ml["features"]]
-    probability = float(ml["model"].predict(X)[0, 1])  # pyfunc returns predict_proba output
+    probability = ml["predict"](X)
     band = "low" if probability < 0.2 else "medium" if probability < 0.5 else "high"
     return Prediction(default_probability=round(probability, 3), risk_band=band, model_version=ml["version"])
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_version": ml.get("version")}
+    return {"status": "ok", "model_version": ml.get("version"), "sha": GIT_SHA}
 
 
 @app.post("/api/v1/predictions", response_model=Prediction)
