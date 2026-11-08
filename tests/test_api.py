@@ -86,3 +86,20 @@ def test_list_limit_above_100_is_rejected(client):
 def test_openapi_documents_the_404(client):
     spec = client.get("/openapi.json").json()
     assert "404" in spec["paths"]["/api/v1/applications/{application_id}"]["get"]["responses"]
+
+
+RISKY = {"amount_usd": 5000, "term_months": 3, "monthly_income_usd": 100.0, "previous_loans": 0, "late_payments": 5}
+SAFE = {"amount_usd": 300, "term_months": 24, "monthly_income_usd": 1500.0, "previous_loans": 5, "late_payments": 0}
+
+
+def test_riskier_applicant_gets_higher_default_probability(client):
+    risky = client.post("/api/v1/predictions", json=RISKY).json()
+    safe = client.post("/api/v1/predictions", json=SAFE).json()
+    assert risky["default_probability"] > safe["default_probability"]
+
+
+def test_risk_band_matches_the_reported_probability(client):
+    for applicant in (RISKY, SAFE):
+        body = client.post("/api/v1/predictions", json=applicant).json()
+        p = body["default_probability"]
+        assert body["risk_band"] == ("low" if p < 0.2 else "medium" if p < 0.5 else "high")
