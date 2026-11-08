@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: loan-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile.prod
+    plan: free
+    autoDeploy: false          # only the pipeline deploys, through the deploy hook
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8000"
