@@ -52,3 +52,37 @@ def test_api_accepts_right_key_and_health_stays_open(client, monkeypatch):
     monkeypatch.setattr(main, "API_KEY", "s3cret")
     assert client.get("/api/v1/applications", headers={"X-API-Key": "s3cret"}).status_code == 200
     assert client.get("/health").status_code == 200
+
+
+def test_create_sets_location_header_and_submitted_at(client):
+    created = client.post("/api/v1/applications", json={**GOOD, "borrower_id": 1})
+    assert created.headers["location"] == f"/api/v1/applications/{created.json()['id']}"
+    assert created.json()["submitted_at"]
+
+
+def test_list_returns_a_page(client):
+    assert client.get("/api/v1/applications").json() == {"items": [], "next_cursor": None}
+
+
+def test_list_limit_and_cursor_walk_through_all_applications(client):
+    for n in range(3):
+        client.post("/api/v1/applications", json={**GOOD, "borrower_id": n + 1})
+    first = client.get("/api/v1/applications", params={"limit": 2}).json()
+    assert len(first["items"]) == 2 and first["next_cursor"] is not None
+    second = client.get("/api/v1/applications", params={"limit": 2, "cursor": first["next_cursor"]}).json()
+    assert len(second["items"]) == 1 and second["next_cursor"] is None
+
+
+def test_list_filters_by_status(client):
+    client.post("/api/v1/applications", json={**GOOD, "borrower_id": 1})
+    assert len(client.get("/api/v1/applications", params={"status": "pending"}).json()["items"]) == 1
+    assert client.get("/api/v1/applications", params={"status": "approved"}).json()["items"] == []
+
+
+def test_list_limit_above_100_is_rejected(client):
+    assert client.get("/api/v1/applications", params={"limit": 101}).status_code == 422
+
+
+def test_openapi_documents_the_404(client):
+    spec = client.get("/openapi.json").json()
+    assert "404" in spec["paths"]["/api/v1/applications/{application_id}"]["get"]["responses"]
