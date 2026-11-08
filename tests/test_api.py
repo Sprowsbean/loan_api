@@ -2,6 +2,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+import main
 from main import APPLICATIONS, app
 
 GOOD = {"amount_usd": 1500, "term_months": 12, "monthly_income_usd": 350.0, "previous_loans": 1, "late_payments": 0}
@@ -39,3 +40,15 @@ def test_create_and_read_application(client):
 
 def test_missing_application_is_404(client):
     assert client.get("/api/v1/applications/99999").status_code == 404
+
+
+def test_api_rejects_missing_or_wrong_key(client, monkeypatch):
+    monkeypatch.setattr(main, "API_KEY", "s3cret")
+    assert client.get("/api/v1/applications").status_code == 401
+    assert client.get("/api/v1/applications", headers={"X-API-Key": "wrong"}).status_code == 401
+
+
+def test_api_accepts_right_key_and_health_stays_open(client, monkeypatch):
+    monkeypatch.setattr(main, "API_KEY", "s3cret")
+    assert client.get("/api/v1/applications", headers={"X-API-Key": "s3cret"}).status_code == 200
+    assert client.get("/health").status_code == 200

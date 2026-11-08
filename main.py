@@ -1,11 +1,13 @@
 """Loan Application Service: stores loan applications and scores their default risk."""
+import hmac
 import os
 
 from contextlib import asynccontextmanager
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from schemas import Application, ApplicationCreate, LoanFeatures, Prediction
 
@@ -16,6 +18,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "loan-default")
 MODEL_ALIAS = os.getenv("MODEL_ALIAS", "champion")
 FEATURES = ["amount_usd", "term_months", "monthly_income_usd", "previous_loans", "late_payments"]
 GIT_SHA = os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_SHA", "unknown")  # set by Render at run time
+API_KEY = os.getenv("API_KEY")  # unset locally and in CI, so /api/ stays open there; set in Render in production
 
 
 @asynccontextmanager
@@ -38,6 +41,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Loan Application Service", version="1.0.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    if API_KEY and request.url.path.startswith("/api/"):
+        supplied = request.headers.get("x-api-key", "")
+        # compare_digest takes the same time whether or not the characters match
+        if not hmac.compare_digest(supplied.encode(), API_KEY.encode()):
+            return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key"})
+    return await call_next(request)
 
 
 def score(features: LoanFeatures) -> Prediction:
