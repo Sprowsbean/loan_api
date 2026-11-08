@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Capstone report: Loan Application Service in production</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm; }
+  body { font: 10.5pt/1.45 "Segoe UI", Arial, sans-serif; color: #1a1a1a; max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 20pt; margin: 0 0 4px; }
+  h2 { font-size: 13.5pt; margin: 22px 0 6px; padding-bottom: 3px; border-bottom: 2px solid #1f4e79; color: #1f4e79; page-break-after: avoid; }
+  h3 { font-size: 11pt; margin: 14px 0 4px; page-break-after: avoid; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 10px; font-size: 9.5pt; page-break-inside: avoid; }
+  th, td { border: 1px solid #c9c9c9; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #eef3f8; }
+  code, pre { font-family: Consolas, "Courier New", monospace; font-size: 8.8pt; }
+  pre { background: #f5f5f5; border: 1px solid #ddd; padding: 7px 9px; white-space: pre-wrap; word-break: break-all; page-break-inside: avoid; }
+  img { max-width: 100%; border: 1px solid #ccc; margin: 4px 0 2px; page-break-inside: avoid; }
+  img.half { max-width: 62%; }
+  .cap { font-size: 8.8pt; color: #555; margin: 0 0 8px; }
+  .ok { color: #1b7a2b; font-weight: 600; }
+  .meta { color: #444; margin: 0 0 10px; }
+  a { color: #1f4e79; }
+</style>
+</head>
+<body>
+
+<h1>Capstone report: Loan Application Service in production</h1>
+<p class="meta">
+  Repository: <a href="https://github.com/Sprowsbean/loan_api">https://github.com/Sprowsbean/loan_api</a><br>
+  Live app: <a href="https://loan-api-rjnx.onrender.com">https://loan-api-rjnx.onrender.com</a> (docs: <code>/docs</code>, health: <code>/health</code>)<br>
+  Date: 8 November 2026 · All times are UTC unless stated (Render shows GMT+7).
+</p>
+
+<h2>Requirements and evidence</h2>
+<table>
+<tr><th>Requirement</th><th>Evidence</th><th>Section</th></tr>
+<tr><td>CI green on <code>main</code>; branch rule requires <code>test</code></td><td>Five green <code>main</code> runs; ruleset <code>protect-main</code> active with required check <code>test</code></td><td>1</td></tr>
+<tr><td>Live <code>/openapi.json</code> compared with the Module 2 specification</td><td>Endpoint-by-endpoint table, matches and deliberate changes</td><td>2</td></tr>
+<tr><td>Model lifecycle: runs, champion, promotion memo, drift chart, alert plan</td><td>Six tracked runs, registry v3 champion, memo, drift chart, thresholds</td><td>3</td></tr>
+<tr><td>Real improvement shipped through a pull request: pipeline graph, verify log, live <code>/health</code> SHA, merge-to-live time</td><td>PRs #2, #3 and #6; graph, verify log; five deploy timings (73 to 99 s)</td><td>4</td></tr>
+<tr><td>Three API-key checks and SSL Labs grade</td><td>curl outputs; certificate details; SSL Labs result</td><td>5</td></tr>
+<tr><td>Bad release drill with a new test; both timings</td><td>PR #4 blocked, PR #5 reached production, rollback, PR #6 with tests; 88 s and about 36 s</td><td>6</td></tr>
+<tr><td>Deployed only by the pipeline; no secrets in repo, images or logs</td><td>Deploy hook flow, Render auto-deploy off, secrets scan</td><td>4 and 5</td></tr>
+</table>
+
+<h2>1. Foundations: CI and branch protection</h2>
+<p>The workflow <code>.github/workflows/ci.yml</code> has two jobs. <code>test</code> runs on every pull request and every push to <code>main</code> (install, <code>python train.py</code>, <code>pytest -v</code>). <code>deploy</code> runs only on <code>main</code>, after <code>test</code> passes. Pull requests are tested and never deployed.</p>
+<table>
+<tr><th>Run</th><th>Commit</th><th>Result</th></tr>
+<tr><td>#1 ci-pipeline</td><td><code>eab62fa</code></td><td class="ok">success</td></tr>
+<tr><td>#2 api-key</td><td><code>cc19bfb</code></td><td class="ok">success</td></tr>
+<tr><td>#3 align-spec</td><td><code>c6a60c9</code></td><td class="ok">success</td></tr>
+<tr><td>#5 drill-break-2 (the bad release)</td><td><code>0be56de</code></td><td class="ok">success (the tests did not catch it; see section 6)</td></tr>
+<tr><td>#6 fix-probability</td><td><code>7e1fb94</code></td><td class="ok">success</td></tr>
+</table>
+<p>Ruleset <code>protect-main</code>: enforcement <b>active</b>, target the default branch, rules: <b>require status check <code>test</code></b> (GitHub Actions), block deletion, block force pushes. Direct pushes to <code>main</code> are therefore impossible; every change arrives through a pull request whose <code>test</code> passed.</p>
+<img src="screenshots/ruleset-require-test.png" class="half" alt="Ruleset requiring the test check">
+<p class="cap">Figure 1. The ruleset requires the <code>test</code> status check from GitHub Actions.</p>
+
+<h2>2. Live /openapi.json compared with the Module 2 specification</h2>
+<p>I compared the live <code>https://loan-api-rjnx.onrender.com/openapi.json</code> with my Module 2 specification (<code>loan-api.yaml</code>). When I first compared them there were four gaps, which I closed in pull request #3 (written test-first: six new tests, seen failing, then passing). The live API now matches the specification, apart from the deliberate changes below.</p>
+<table>
+<tr><th>Specification</th><th>Live API</th><th>Status</th></tr>
+<tr><td><code>POST /applications</code>: 201 with <code>Location</code> header, 422</td><td><code>POST /api/v1/applications</code>: 201, sets <code>Location</code>, 422</td><td class="ok">matches (Location fixed in PR #3)</td></tr>
+<tr><td><code>GET /applications</code> with <code>status</code> and <code>limit</code> (default 20, max 100), returns <code>{items, next_cursor}</code></td><td>Same parameters and response shape</td><td class="ok">matches (fixed in PR #3)</td></tr>
+<tr><td><code>GET /applications/{id}</code>: 200, 404</td><td>200, 404 (now documented in <code>/openapi.json</code>), 422</td><td class="ok">matches (fixed in PR #3)</td></tr>
+<tr><td><code>Application.submitted_at</code></td><td>Present</td><td class="ok">matches (fixed in PR #3)</td></tr>
+<tr><td><code>amount_usd</code> 100 to 5000, <code>term_months</code> in 3, 6, 12, 18, 24, <code>status</code> enum</td><td>Same constraints</td><td class="ok">matches</td></tr>
+</table>
+<p><b>Changed on purpose:</b></p>
+<table>
+<tr><th>Live API differs from the specification</th><th>Reason</th></tr>
+<tr><td>Added <code>cursor</code> query parameter on the list endpoint</td><td>The specification returns <code>next_cursor</code> but gives callers no way to send it back.</td></tr>
+<tr><td>Create also requires <code>monthly_income_usd</code>, <code>previous_loans</code>, <code>late_payments</code>; the response includes a <code>prediction</code></td><td>These are the model's input features, added with the model.</td></tr>
+<tr><td>Added <code>POST /api/v1/predictions</code> and <code>GET /health</code></td><td>Scoring endpoint; health check used by Render and by the pipeline's verify step.</td></tr>
+<tr><td>Security: <code>X-API-Key</code> header on <code>/api/</code> routes instead of <code>bearerAuth</code></td><td>Lesson 6.6 requires an API key header; <code>/health</code> and <code>/docs</code> stay open.</td></tr>
+</table>
+
+<h2>3. Model lifecycle (Module 5)</h2>
+<p>Full evidence is in <code>REPORT.md</code> in the repository. Summary:</p>
+<table>
+<tr><th>Run (experiment <code>loan-default</code>)</th><th>AUC</th><th>Recall</th><th>Precision</th></tr>
+<tr><td>logreg C=0.1, no class weights</td><td>0.923</td><td>0.707</td><td>0.813</td></tr>
+<tr><td>logreg C=0.1, balanced</td><td>0.923</td><td>0.865</td><td>0.610</td></tr>
+<tr><td>logreg C=1.0, balanced</td><td>0.923</td><td>0.865</td><td>0.611</td></tr>
+<tr><td>forest depth 4, no class weights</td><td>0.917</td><td>0.608</td><td>0.877</td></tr>
+<tr><td>forest depth 6, balanced</td><td>0.926</td><td>0.806</td><td>0.728</td></tr>
+<tr><td><b>forest depth 8, balanced (registered v3, champion)</b></td><td>0.926</td><td>0.779</td><td>0.769</td></tr>
+</table>
+<img src="screenshots/registry.png" class="half" alt="Model registry">
+<p class="cap">Figure 2. Registry: <code>loan-default</code> v3 holds <code>champion</code>, v1 holds <code>challenger</code>, all versions have descriptions.</p>
+<p><b>Promotion memo.</b> I promote v3 (random forest, depth 8, balanced class weights) to champion. It has the best AUC (0.926), catches 77.9% of real defaults (recall 0.779), and 76.9% of the loans it flags really default (precision 0.769). The logistic regression (v1) has higher recall (0.865) but a precision of only 0.610, so about four in ten flagged applicants would be good customers wrongly rejected. The shallow forest (v2) has the best precision (0.877) but misses about four in ten defaults (recall 0.608), the costlier error for a lender. v1 stays as challenger as the simplest model.</p>
+<img src="screenshots/drift-chart.png" alt="Drift chart">
+<p class="cap">Figure 3. Fourteen simulated days. Income PSI passes 0.10 on day 6 and 0.25 on day 10; amount and late-payment PSI stay below 0.05.</p>
+<table>
+<tr><th>Alert</th><th>Rule</th><th>Justification from the chart</th></tr>
+<tr><td>Warn</td><td>any feature PSI above 0.10</td><td>Days 1 to 5 never exceeded 0.073, so 0.10 sits above day-to-day noise. First fires on day 6 (0.172).</td></tr>
+<tr><td>Investigate and retrain</td><td>3-day average PSI above 0.25</td><td>A single-day rule is noisy: day 11 dipped back to 0.236 after day 10 reached 0.326. The 3-day average fires on day 10 (0.267).</td></tr>
+<tr><td>Watch</td><td>actual default rate more than 20% above baseline</td><td>Confirms drift is hurting outcomes: 0.357 on day 10 against 0.247 on day 1.</td></tr>
+</table>
+<p><b>Note on what production serves.</b> The live app loads the model file baked into the image (<code>model_version 1.0.0</code>, trained by <code>train.py</code> during the Docker build), because Render cannot reach the MLflow server on my machine. In development (<code>MLFLOW_TRACKING_URI</code> set) the same code loads <code>models:/loan-default@champion</code> from the registry. Promoting the registry champion to production would need the model exported into the image or a hosted MLflow server.</p>
+
+<h2>4. Ship and verify</h2>
+<p>Real improvements shipped through pull requests: #2 (API key), #3 (specification alignment) and #6 (fix forward). On merge, <code>deploy</code> calls the Render deploy hook for the merged commit, then polls <code>/health</code> every 10 seconds until the live <code>sha</code> equals that commit, and fails the pipeline after 10 minutes. The pipeline run for pull request #6:</p>
+<img src="screenshots/pipeline-fix-forward.png" alt="Pipeline graph">
+<p class="cap">Figure 4. Pipeline graph for the merge of pull request #6: <code>test</code> then <code>deploy</code>, both green.</p>
+<p>Verify log (run 42452114688): the live app still reports the previous commit while the new build starts, then reports the merged commit.</p>
+<pre>attempt 1: live sha = c6a60c9c3508334bf3045167cda4cd5b88a728f7 (want 7e1fb94ef457df289c2272d9bbaba9488d8102d8)
+attempt 2: live sha = c6a60c9c3508334bf3045167cda4cd5b88a728f7 (want 7e1fb94ef457df289c2272d9bbaba9488d8102d8)
+attempt 3: live sha = c6a60c9c3508334bf3045167cda4cd5b88a728f7 (want 7e1fb94ef457df289c2272d9bbaba9488d8102d8)
+attempt 4: live sha = c6a60c9c3508334bf3045167cda4cd5b88a728f7 (want 7e1fb94ef457df289c2272d9bbaba9488d8102d8)
+attempt 5: live sha = 7e1fb94ef457df289c2272d9bbaba9488d8102d8 (want 7e1fb94ef457df289c2272d9bbaba9488d8102d8)
+Live after 99s</pre>
+<p>Live <code>/health</code> after that deploy:</p>
+<pre>{"status":"ok","model_version":"1.0.0","sha":"7e1fb94ef457df289c2272d9bbaba9488d8102d8"}</pre>
+<table>
+<tr><th>Merge to live (time from the merge commit to the live SHA matching)</th><th>Seconds</th></tr>
+<tr><td>PR #1 pipeline</td><td>88</td></tr>
+<tr><td>PR #2 API key</td><td>94</td></tr>
+<tr><td>PR #3 specification alignment</td><td>73</td></tr>
+<tr><td>PR #5 bad release (drill)</td><td>88</td></tr>
+<tr><td>PR #6 fix forward</td><td>99</td></tr>
+</table>
+<p><b>Deployed only by the pipeline.</b> The Render service has Auto-Deploy set to off. Every code deploy in Render's Events list reads "Triggered via Deploy Hook" (Figure 7). The only manual actions in Render were a service restart and a dashboard rollback, neither of which deploys new code; both are described in section 6. The deploy hook is a GitHub Actions secret, and the app URL is a repository variable.</p>
+
+<h2>5. Secure</h2>
+<h3>API-key checks</h3>
+<p>Production requires an <code>X-API-Key</code> header on every <code>/api/</code> route (middleware in <code>main.py</code>, compared with <code>hmac.compare_digest</code>). The key is a Render environment variable (Figure 5); it is not set in the repository, in CI, or in the image, so tests and local runs are unaffected. <code>/health</code> and <code>/docs</code> stay open for Render's health checks.</p>
+<pre>$ curl -s $APP/health                                         # no key: open
+{"status":"ok","model_version":"1.0.0","sha":"..."}
+$ curl -s -o /dev/null -w "%{http_code}\n" $APP/api/v1/applications   # no key
+401
+$ curl -s -H "X-API-Key: $KEY" $APP/api/v1/applications       # right key
+[]                  (before PR #3; now {"items": [], "next_cursor": null})
+# a wrong key also returns 401 {"detail":"Invalid or missing API key"}</pre>
+<img src="screenshots/render-env-masked.png" class="half" alt="Render environment variables, values masked">
+<p class="cap">Figure 5. The key lives only in Render's environment settings (value masked).</p>
+<p>Two tests in <code>tests/test_api.py</code> cover the behaviour: a missing or wrong key gets 401, the right key gets 200, and <code>/health</code> stays open.</p>
+
+<h3>Certificate and SSL Labs</h3>
+<pre>subject=CN=onrender.com
+issuer=C=US, O=Google Trust Services, CN=WE1
+notBefore=Sep 21 22:04:31 2026 GMT
+notAfter=Dec 20 23:04:28 2026 GMT
+TLS 1.2: ECDHE-ECDSA-AES128-GCM-SHA256     TLS 1.3: TLS_AES_256_GCM_SHA384</pre>
+<p><b>SSL Labs grade: A</b> for both server addresses of <code>loan-api-rjnx.onrender.com</code> (216.24.57.16 and 216.24.57.18), measured on 8 November 2026 with the SSL Labs API (the same engine as the website test). Only TLS 1.2 and TLS 1.3 are offered, forward secrecy is supported, and there are no warnings. The grade is A and not A+ because the server sends no HSTS header (<code>Strict-Transport-Security</code>); Render does not set one by default. Render obtains and renews the certificate automatically, and the expiry is about six weeks away by design.</p>
+
+<h3>No secrets in the repository, images or logs</h3>
+<ul>
+<li>Search of tracked files for <code>key</code>, <code>secret</code>, <code>token</code>, <code>password</code>: the only matches are the code that reads <code>API_KEY</code> from the environment, the test values <code>s3cret</code> and <code>wrong</code>, the workflow's <code>secrets.RENDER_DEPLOY_HOOK</code> reference, and the development-only database password in <code>compose.yaml</code> (<code>loans_dev_only</code>, marked as such).</li>
+<li>Searching the full git history for the Render deploy hook URL finds nothing.</li>
+<li>The image contains no key: <code>API_KEY</code> is read at run time. The deploy step prints nothing from the hook, and GitHub masks secrets in logs; the verify step prints only commit SHAs.</li>
+</ul>
+
+<h2>6. Break and recover (bad release drill)</h2>
+<h3>Break 1: a rule the tests check (stopped)</h3>
+<p>Pull request #4 raised the loan limit to <code>le=9000</code> in <code>schemas.py</code>. The <code>test</code> job failed on <code>test_amount_above_limit_is_rejected</code> (<code>assert 200 == 422</code>), <code>deploy</code> was skipped, and the ruleset blocked the merge. I closed the pull request unmerged.</p>
+<img src="screenshots/pipeline-blocked-at-test.png" alt="Pipeline stopped at test">
+<p class="cap">Figure 6. The pipeline stops at <code>test</code>; <code>deploy</code> never runs.</p>
+
+<h3>Break 2: something the tests do not check (reached production)</h3>
+<p>Pull request #5 changed <code>score</code> to return <code>round(1 - probability, 3)</code>. All 13 existing tests passed, because they only checked that the probability lies between 0 and 1. It was merged and deployed. Scoring the first applicant from Lesson 5.5 returned a wrong, inverted result:</p>
+<pre>before: {"default_probability":0.095,"risk_band":"low","model_version":"1.0.0"}
+bad release (commit 0be56de): {"default_probability":0.905,"risk_band":"low","model_version":"1.0.0"}</pre>
+<p>A 90.5% default probability with a "low" risk band is inconsistent, which is how the fault shows itself.</p>
+<img src="screenshots/render-events-bad-release.png" class="half" alt="Render events showing the bad deploy">
+<p class="cap">Figure 7. Render events: the bad release (<code>0be56de</code>, "Triggered via Deploy Hook") and the previous good deploy (<code>c6a60c9</code>) with its Rollback button.</p>
+<h3>Rollback</h3>
+<p>I rolled back in Render's Events tab to the deploy of <code>c6a60c9</code> ("Rolled back by you via Dashboard").</p>
+<img src="screenshots/render-rollback-started.png" class="half" alt="Rollback in progress">
+<p class="cap">Figure 8. Rollback started at 12:43:52 GMT+7 (05:43:52 UTC).</p>
+<table>
+<tr><th>Timing</th><th>Start</th><th>End</th><th>Duration</th></tr>
+<tr><td><b>Merge to live</b> (bad release)</td><td>05:40:34 (merge)</td><td>05:42:02 (live SHA matches)</td><td><b>88 s</b></td></tr>
+<tr><td><b>Rollback to recovered</b></td><td>05:43:52 (Rollback clicked)</td><td>05:44:28 (<code>/health</code> reports <code>c6a60c9</code> again, polled every 5 s)</td><td><b>about 36 s</b></td></tr>
+</table>
+<h3>Fix forward, with a test that would have caught it</h3>
+<p>Pull request #6 restores <code>round(probability, 3)</code> and adds two tests. I ran them first against the bad code, where both <b>failed</b> (2 failed, 13 passed), then against the fix, where all 15 pass:</p>
+<ul>
+<li><code>test_riskier_applicant_gets_higher_default_probability</code>: a high-risk applicant must score above a low-risk one.</li>
+<li><code>test_risk_band_matches_the_reported_probability</code>: the risk band must agree with the probability in the same response.</li>
+</ul>
+<p>After merging #6 the pipeline verified the new commit live in 99 s (Figure 4), and the same applicant scores <code>0.095</code> again.</p>
+<img src="screenshots/pipeline-bad-release.png" alt="The bad release passing CI">
+<p class="cap">Figure 9. Pipeline for the bad release: it passed <code>test</code> and deployed, which is why the new tests were needed.</p>
+
+<h2>Notes and limits</h2>
+<ul>
+<li>Render's free instance sleeps when idle, so the first request after a pause can take about 50 seconds; the verify step allows 10 minutes for this.</li>
+<li>Applications are held in memory and are lost on every restart or deploy; a database is the next step.</li>
+<li>An environment variable saved in Render with "Save only" is not applied until the next deploy. I hit this when setting <code>API_KEY</code>: the restart did not apply it, and "Save and deploy" did.</li>
+</ul>
+
+</body>
+</html>

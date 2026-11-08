@@ -1,0 +1,16 @@
+Capstone submission: Loan Application Service
+
+Repository URL:
+https://github.com/Sprowsbean/loan_api
+
+Live app URL:
+https://loan-api-rjnx.onrender.com
+
+Live API docs:
+https://loan-api-rjnx.onrender.com/docs
+
+Live health check:
+https://loan-api-rjnx.onrender.com/health
+
+Pipeline runs (GitHub Actions):
+https://github.com/Sprowsbean/loan_api/actions
