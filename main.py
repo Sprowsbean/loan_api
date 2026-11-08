@@ -3,13 +3,15 @@ import hmac
 import os
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Literal
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
-from schemas import Application, ApplicationCreate, LoanFeatures, Prediction
+from schemas import Application, ApplicationCreate, ApplicationPage, Error, LoanFeatures, Prediction
 
 ml = {}            # filled at start-up: {"predict": ..., "version": ..., "features": [...]}
 APPLICATIONS = {}  # in-memory store; resets when the server restarts
@@ -71,19 +73,25 @@ def predict(features: LoanFeatures):
 
 
 @app.post("/api/v1/applications", response_model=Application, status_code=201)
-def create_application(body: ApplicationCreate):
-    new = Application(id=7781 + len(APPLICATIONS), status="pending",
+def create_application(body: ApplicationCreate, response: Response):
+    new = Application(id=7781 + len(APPLICATIONS), status="pending", submitted_at=datetime.now(timezone.utc),
                       prediction=score(body), **body.model_dump())
     APPLICATIONS[new.id] = new
+    response.headers["Location"] = f"/api/v1/applications/{new.id}"
     return new
 
 
-@app.get("/api/v1/applications", response_model=list[Application])
-def list_applications():
-    return list(APPLICATIONS.values())
+@app.get("/api/v1/applications", response_model=ApplicationPage)
+def list_applications(status: Literal["pending", "approved", "rejected"] | None = None,
+                      limit: int = Query(20, ge=1, le=100), cursor: int | None = None):
+    matches = [a for a in APPLICATIONS.values()
+               if (status is None or a.status == status) and (cursor is None or a.id > cursor)]
+    page = matches[:limit]
+    return ApplicationPage(items=page, next_cursor=page[-1].id if len(matches) > limit else None)
 
 
-@app.get("/api/v1/applications/{application_id}", response_model=Application)
+@app.get("/api/v1/applications/{application_id}", response_model=Application,
+         responses={404: {"model": Error, "description": "No application with this id"}})
 def get_application(application_id: int):
     if application_id not in APPLICATIONS:
         raise HTTPException(status_code=404, detail=f"Application {application_id} not found")

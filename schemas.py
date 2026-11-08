@@ -1,4 +1,5 @@
 """Request and response shapes for the loan service (the contract from Module 2)."""
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -25,4 +26,14 @@ class ApplicationCreate(LoanFeatures):
 class Application(ApplicationCreate):
     id: int
     status: Literal["pending", "approved", "rejected"]
+    submitted_at: datetime
     prediction: Prediction
+
+
+class ApplicationPage(BaseModel):
+    items: list[Application]
+    next_cursor: int | None = None  # pass it back as ?cursor= to get the next page
+
+
+class Error(BaseModel):
+    detail: str
